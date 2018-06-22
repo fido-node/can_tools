@@ -49,16 +49,24 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "stm32f1xx_hal.h"
-#include "usb_device.h"
+#include "cmsis_os.h"
 
 /* USER CODE BEGIN Includes */
+
+#include <stdlib.h>
+#include <string.h>
+
+#include <time.h>
+
 
 /* USER CODE END Includes */
 
 /* Private variables ---------------------------------------------------------*/
 CAN_HandleTypeDef hcan1;
 
-UART_HandleTypeDef huart3;
+osThreadId generate_CAN_taHandle;
+osThreadId send_can_frm_taHandle;
+osMessageQId output_QueueHandle;
 
 /* USER CODE BEGIN PV */
 /* Private variables ---------------------------------------------------------*/
@@ -68,8 +76,9 @@ UART_HandleTypeDef huart3;
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
-static void MX_USART3_UART_Init(void);
 static void MX_CAN1_Init(void);
+void generate_CAN_task_f(void const * argument);
+void send_can_frm_task_f(void const * argument);
 
 /* USER CODE BEGIN PFP */
 /* Private function prototypes -----------------------------------------------*/
@@ -77,24 +86,25 @@ static void MX_CAN1_Init(void);
 /* USER CODE END PFP */
 
 /* USER CODE BEGIN 0 */
+
+uint8_t modForGen = 10;
 uint8_t CR = '\n';
 uint8_t LF = '\r';
 
 void tglYell() {
-    HAL_GPIO_TogglePin(LED1_GPIO_Port, LED1_Pin);
+	HAL_GPIO_TogglePin(LED1_GPIO_Port, LED1_Pin);
 }
 
+void circleThroughMods() {
+	modForGen += 1;
+	if (modForGen > 10) {
+		modForGen = 2;
+	}
+}
 
 void tglGrn() {
-    HAL_GPIO_TogglePin(LED2_GPIO_Port, LED2_Pin);
+	HAL_GPIO_TogglePin(LED2_GPIO_Port, LED2_Pin);
 }
-
-void println(const char *str) {
-  HAL_UART_Transmit(&huart3, (uint8_t *) str, strlen(str), 100);
-	HAL_UART_Transmit(&huart3, &CR, 1, 100);
-	HAL_UART_Transmit(&huart3, &LF, 1, 100);
-}
-
 
 /* USER CODE END 0 */
 
@@ -107,9 +117,9 @@ int main(void)
 {
   /* USER CODE BEGIN 1 */
 
-  static CanTxMsgTypeDef        TxMessage;
+	static CanTxMsgTypeDef        TxMessage;
 	static CanRxMsgTypeDef        RxMessage;
-  
+	
   /* USER CODE END 1 */
 
   /* MCU Configuration----------------------------------------------------------*/
@@ -130,85 +140,87 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
-  MX_USART3_UART_Init();
-  MX_USB_DEVICE_Init();
   MX_CAN1_Init();
   /* USER CODE BEGIN 2 */
-  hcan1.pTxMsg = &TxMessage;
-  hcan1.pRxMsg = &RxMessage;
+	hcan1.pTxMsg = &TxMessage;
+	hcan1.pRxMsg = &RxMessage;
 	
-	 CAN_FilterConfTypeDef f0FilterConfig;
-  f0FilterConfig.FilterNumber = 0;
-  f0FilterConfig.FilterMode = CAN_FILTERMODE_IDMASK;
-  f0FilterConfig.FilterScale = CAN_FILTERSCALE_32BIT;
-  f0FilterConfig.FilterIdHigh = 0x0000;
-  f0FilterConfig.FilterIdLow = 0x0000;
-  f0FilterConfig.FilterMaskIdHigh = 0x0000;
-  f0FilterConfig.FilterMaskIdLow = 0x0000;
-  f0FilterConfig.FilterFIFOAssignment = 0;
-  f0FilterConfig.FilterActivation = ENABLE;
-  f0FilterConfig.BankNumber = 13;
+CAN_FilterConfTypeDef canFilterConfig;
+canFilterConfig.FilterNumber = 0;
+canFilterConfig.FilterMode = CAN_FILTERMODE_IDMASK;
+canFilterConfig.FilterScale = CAN_FILTERSCALE_32BIT;
+canFilterConfig.FilterIdHigh = 0x0000;
+canFilterConfig.FilterIdLow = 0x0000;
+canFilterConfig.FilterMaskIdHigh = 0x0000 << 5;
+canFilterConfig.FilterMaskIdLow = 0x0000;
+canFilterConfig.FilterFIFOAssignment = 0;
+canFilterConfig.FilterActivation = ENABLE;
+canFilterConfig.BankNumber = 1;
+HAL_CAN_ConfigFilter(&hcan1, &canFilterConfig);
 
-  CAN_FilterConfTypeDef f1FilterConfig;
-  f1FilterConfig.FilterNumber = 0;
-  f1FilterConfig.FilterMode = CAN_FILTERMODE_IDMASK;
-  f1FilterConfig.FilterScale = CAN_FILTERSCALE_32BIT;
-  f1FilterConfig.FilterIdHigh = 0x0000;
-  f1FilterConfig.FilterIdLow = 0x0000;
-  f1FilterConfig.FilterMaskIdHigh = 0x0000;
-  f1FilterConfig.FilterMaskIdLow = 0x0000;
-  f1FilterConfig.FilterFIFOAssignment = 1;
-  f1FilterConfig.FilterActivation = ENABLE;
-  f1FilterConfig.BankNumber = 14;
-
-  HAL_CAN_ConfigFilter(&hcan1, &f0FilterConfig);
-  HAL_CAN_ConfigFilter(&hcan1, &f1FilterConfig);
-	
-	hcan1.pTxMsg->StdId = 0x321;
-  hcan1.pTxMsg->ExtId = 0x01;
-  hcan1.pTxMsg->RTR = CAN_RTR_DATA;
-  hcan1.pTxMsg->IDE = CAN_ID_STD;
-  hcan1.pTxMsg->DLC = 2;
   /* USER CODE END 2 */
+
+  /* USER CODE BEGIN RTOS_MUTEX */
+	/* add mutexes, ... */
+  /* USER CODE END RTOS_MUTEX */
+
+  /* USER CODE BEGIN RTOS_SEMAPHORES */
+	/* add semaphores, ... */
+  /* USER CODE END RTOS_SEMAPHORES */
+
+  /* USER CODE BEGIN RTOS_TIMERS */
+	/* start timers, add new ones, ... */
+  /* USER CODE END RTOS_TIMERS */
+
+  /* Create the thread(s) */
+  /* definition and creation of generate_CAN_ta */
+  osThreadDef(generate_CAN_ta, generate_CAN_task_f, osPriorityNormal, 0, 128);
+  generate_CAN_taHandle = osThreadCreate(osThread(generate_CAN_ta), NULL);
+
+  /* definition and creation of send_can_frm_ta */
+  osThreadDef(send_can_frm_ta, send_can_frm_task_f, osPriorityIdle, 0, 128);
+  send_can_frm_taHandle = osThreadCreate(osThread(send_can_frm_ta), NULL);
+
+  /* USER CODE BEGIN RTOS_THREADS */
+	/* add threads, ... */
+  /* USER CODE END RTOS_THREADS */
+
+  /* Create the queue(s) */
+  /* definition and creation of output_Queue */
+/* what about the sizeof here??? cd native code */
+  osMessageQDef(output_Queue, 16, uint32_t);
+  output_QueueHandle = osMessageCreate(osMessageQ(output_Queue), NULL);
+
+  /* USER CODE BEGIN RTOS_QUEUES */
+	/* add queues, ... */
+	tglYell();
+	HAL_Delay(500);
+	tglGrn();
+	HAL_Delay(500);
+	tglGrn();
+	HAL_Delay(500);
+	tglYell();
+	HAL_Delay(500);
+	HAL_CAN_Receive_IT(&hcan1, CAN_FIFO0);
+  /* USER CODE END RTOS_QUEUES */
+ 
+
+  /* Start scheduler */
+  osKernelStart();
+  
+  /* We should never get here as control is now taken by the scheduler */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-    tglYell();
-		
-		tglGrn();
-		tglGrn();
-		tglYell();
 		//HAL_GPIO_TogglePin(CAN_CTRL_GPIO_Port, CAN_CTRL_Pin);
-  while (1)
-  {
-		
-      /* Set the data to be tranmitted */
-      hcan1.pTxMsg->Data[0] = 0xDE;
-      hcan1.pTxMsg->Data[1] = 0xAD;
-		  hcan1.pTxMsg->Data[2] = 0x00;
-			hcan1.pTxMsg->Data[3] = 0xBE;
-		  hcan1.pTxMsg->Data[4] = 0xEF;
-	
-        char buffer[20];
-		HAL_StatusTypeDef status = HAL_CAN_Transmit(&hcan1, 100);
-			if (status != HAL_OK)
-			{
-				tglGrn();
-					println("WRITE ERROR");
-				
-				HAL_UART_Transmit(&huart3, (uint8_t*)buffer, sprintf(buffer, "%d", status), 500);
-				println(" ");
-			/* Transmition Error */
-			}
-			tglYell();
-			println("AFTER WRITE");
-			HAL_Delay(1000); 
+	while (1)
+	{	
 
   /* USER CODE END WHILE */
 
   /* USER CODE BEGIN 3 */
 
-  }
+	}
   /* USER CODE END 3 */
 
 }
@@ -222,7 +234,6 @@ void SystemClock_Config(void)
 
   RCC_OscInitTypeDef RCC_OscInitStruct;
   RCC_ClkInitTypeDef RCC_ClkInitStruct;
-  RCC_PeriphCLKInitTypeDef PeriphClkInit;
 
     /**Initializes the CPU, AHB and APB busses clocks 
     */
@@ -254,13 +265,6 @@ void SystemClock_Config(void)
     _Error_Handler(__FILE__, __LINE__);
   }
 
-  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_USB;
-  PeriphClkInit.UsbClockSelection = RCC_USBCLKSOURCE_PLL_DIV3;
-  if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
-  {
-    _Error_Handler(__FILE__, __LINE__);
-  }
-
     /**Configure the Systick interrupt time 
     */
   HAL_SYSTICK_Config(HAL_RCC_GetHCLKFreq()/1000);
@@ -274,7 +278,7 @@ void SystemClock_Config(void)
   __HAL_RCC_PLLI2S_ENABLE();
 
   /* SysTick_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(SysTick_IRQn, 0, 0);
+  HAL_NVIC_SetPriority(SysTick_IRQn, 15, 0);
 }
 
 /* CAN1 init function */
@@ -285,8 +289,8 @@ static void MX_CAN1_Init(void)
   hcan1.Init.Prescaler = 8;
   hcan1.Init.Mode = CAN_MODE_NORMAL;
   hcan1.Init.SJW = CAN_SJW_1TQ;
-  hcan1.Init.BS1 = CAN_BS1_6TQ;
-  hcan1.Init.BS2 = CAN_BS2_2TQ;
+  hcan1.Init.BS1 = CAN_BS1_5TQ;
+  hcan1.Init.BS2 = CAN_BS2_3TQ;
   hcan1.Init.TTCM = DISABLE;
   hcan1.Init.ABOM = DISABLE;
   hcan1.Init.AWUM = DISABLE;
@@ -294,25 +298,6 @@ static void MX_CAN1_Init(void)
   hcan1.Init.RFLM = DISABLE;
   hcan1.Init.TXFP = ENABLE;
   if (HAL_CAN_Init(&hcan1) != HAL_OK)
-  {
-    _Error_Handler(__FILE__, __LINE__);
-  }
-
-}
-
-/* USART3 init function */
-static void MX_USART3_UART_Init(void)
-{
-
-  huart3.Instance = USART3;
-  huart3.Init.BaudRate = 115200;
-  huart3.Init.WordLength = UART_WORDLENGTH_8B;
-  huart3.Init.StopBits = UART_STOPBITS_1;
-  huart3.Init.Parity = UART_PARITY_NONE;
-  huart3.Init.Mode = UART_MODE_TX_RX;
-  huart3.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-  huart3.Init.OverSampling = UART_OVERSAMPLING_16;
-  if (HAL_UART_Init(&huart3) != HAL_OK)
   {
     _Error_Handler(__FILE__, __LINE__);
   }
@@ -359,15 +344,94 @@ static void MX_GPIO_Init(void)
 
   /*Configure GPIO pin : BUTTON_Pin */
   GPIO_InitStruct.Pin = BUTTON_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(BUTTON_GPIO_Port, &GPIO_InitStruct);
+
+  /* EXTI interrupt init*/
+  HAL_NVIC_SetPriority(EXTI9_5_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
 
 }
 
 /* USER CODE BEGIN 4 */
+void HAL_CAN_RxCpltCallback(CAN_HandleTypeDef* hcan) {
+	CanRxMsgTypeDef* fp = NULL;
+	fp = malloc(sizeof(CanRxMsgTypeDef));
+	memcpy(fp, hcan1.pRxMsg, sizeof(CanRxMsgTypeDef));
+	xQueueSendFromISR(output_QueueHandle, &fp, NULL);
+	HAL_CAN_Receive_IT(&hcan1, CAN_FIFO0);
+}
 
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+	circleThroughMods();
+}
 /* USER CODE END 4 */
+
+/* generate_CAN_task_f function */
+void generate_CAN_task_f(void const * argument)
+{
+
+  /* USER CODE BEGIN 5 */
+	CanRxMsgTypeDef* fp = NULL;
+	/* Infinite loop */
+	for(;;)
+	{
+		fp = malloc(sizeof(CanRxMsgTypeDef));
+		if (fp != NULL) {
+			uint8_t dlc = rand() % 9;
+
+			fp->StdId = 0xff;
+			fp->RTR = CAN_RTR_DATA;
+			fp->IDE = CAN_ID_STD;
+			fp->DLC = dlc;
+			
+			for (uint8_t i = 0; i < dlc; i++) {
+				fp->Data[i] = rand() % 0x100;
+			}
+			xQueueSend(output_QueueHandle, &fp, 10);
+		}
+		osDelay(modForGen * modForGen * modForGen);
+	}
+  /* USER CODE END 5 */ 
+}
+
+/* send_can_frm_task_f function */
+void send_can_frm_task_f(void const * argument)
+{
+  /* USER CODE BEGIN send_can_frm_task_f */
+	/* Infinite loop */
+	CanRxMsgTypeDef *fp = NULL;
+
+	for(;;) {
+		if (xQueueReceive(output_QueueHandle, &fp, 10)) {
+			hcan1.pTxMsg->StdId = fp->StdId;
+			hcan1.pTxMsg->ExtId = fp->ExtId;
+			hcan1.pTxMsg->RTR = fp->RTR;
+			hcan1.pTxMsg->IDE = fp->IDE;
+			hcan1.pTxMsg->DLC = fp->DLC;
+			/* Set the data to be tranmitted */
+			hcan1.pTxMsg->Data[0] = fp->Data[0];
+			hcan1.pTxMsg->Data[1] = fp->Data[1];
+			hcan1.pTxMsg->Data[2] = fp->Data[2];
+			hcan1.pTxMsg->Data[3] = fp->Data[3];
+			hcan1.pTxMsg->Data[4] = fp->Data[4];
+			hcan1.pTxMsg->Data[5] = fp->Data[5];
+			hcan1.pTxMsg->Data[6] = fp->Data[6];
+			hcan1.pTxMsg->Data[7] = fp->Data[7];
+
+			HAL_StatusTypeDef status = HAL_CAN_Transmit(&hcan1, 100);
+			if (status != HAL_OK) {
+				tglGrn();
+			}
+			tglYell();
+			free(fp);
+		}
+		osDelay(1);
+	}
+  /* USER CODE END send_can_frm_task_f */
+}
 
 /**
   * @brief  Period elapsed callback in non blocking mode
@@ -399,8 +463,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 void _Error_Handler(char *file, int line)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
-  /* User can add his own implementation to report the HAL error return state */
-  println("jeez");
+	/* User can add his own implementation to report the HAL error return state */
   /* USER CODE END Error_Handler_Debug */
 }
 
@@ -416,8 +479,8 @@ void assert_failed(uint8_t* file, uint32_t line)
 { 
   /* USER CODE BEGIN 6 */
 	println("asert");
-  /* User can add his own implementation to report the file name and line number,
-     tex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
+	/* User can add his own implementation to report the file name and line number,
+		 tex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
   /* USER CODE END 6 */
 }
 #endif /* USE_FULL_ASSERT */
